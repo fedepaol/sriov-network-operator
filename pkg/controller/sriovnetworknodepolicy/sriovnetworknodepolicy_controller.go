@@ -9,6 +9,9 @@ import (
 	"os"
 	"reflect"
 	"sort"
+
+	"k8s.io/apimachinery/pkg/version"
+
 	// "time"
 
 	sriovnetworkv1 "github.com/openshift/sriov-network-operator/pkg/apis/sriovnetwork/v1"
@@ -25,6 +28,7 @@ import (
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -56,12 +60,28 @@ var Namespace = os.Getenv("NAMESPACE")
 // Add creates a new SriovNetworkNodePolicy Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
-	return add(mgr, newReconciler(mgr))
+	r, err := newReconciler(mgr)
+	if err != nil {
+		return err
+	}
+	return add(mgr, r)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileSriovNetworkNodePolicy{client: mgr.GetClient(), scheme: mgr.GetScheme()}
+func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	client, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize apiserver client: %v", err)
+	}
+
+	clusterVer, err := retrieveClusterVersion(client)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReconcileSriovNetworkNodePolicy{client: mgr.GetClient(),
+		scheme:         mgr.GetScheme(),
+		clusterVersion: clusterVer}, nil
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -83,12 +103,19 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 var _ reconcile.Reconciler = &ReconcileSriovNetworkNodePolicy{}
 
+// ClusterVersion represents the human readable versions of k8s git commit and Openshift commit (if any)
+type ClusterVersion struct {
+	K8sVersion *string
+	OsVersion  *string
+}
+
 // ReconcileSriovNetworkNodePolicy reconciles a SriovNetworkNodePolicy object
 type ReconcileSriovNetworkNodePolicy struct {
 	// This client, initialized using mgr.Client() above, is a split client
 	// that reads objects from the cache and writes to the apiserver
-	client client.Client
-	scheme *runtime.Scheme
+	client         client.Client
+	scheme         *runtime.Scheme
+	clusterVersion ClusterVersion
 }
 
 // Reconcile reads that state of the cluster for a SriovNetworkNodePolicy object and makes changes based on the state read
@@ -157,7 +184,6 @@ func (r *ReconcileSriovNetworkNodePolicy) Reconcile(request reconcile.Request) (
 	if err = r.syncWebhookObjs(defaultPolicy); err != nil {
 		return reconcile.Result{}, err
 	}
-
 
 	// All was successful. Request that this be re-triggered after ResyncPeriod,
 	// so we can reconcile state again.
@@ -314,6 +340,7 @@ func (r *ReconcileSriovNetworkNodePolicy) syncPluginDaemonObjs(dp *sriovnetworkv
 	data.Data["SRIOVDevicePluginImage"] = os.Getenv("SRIOV_DEVICE_PLUGIN_IMAGE")
 	data.Data["ReleaseVersion"] = os.Getenv("RELEASEVERSION")
 	data.Data["ResourcePrefix"] = os.Getenv("RESOURCE_PREFIX")
+	// TODO Here FEDE
 	objs, err := renderDsForCR(PLUGIN_PATH, &data)
 	if err != nil {
 		logger.Error(err, "Fail to render SR-IoV manifests")
@@ -892,4 +919,35 @@ func resourceNameInList(name string, rcl *dptypes.ResourceConfList) (bool, int) 
 		}
 	}
 	return false, 0
+}
+
+func retrieveClusterVersion(client *kubernetes.Clientset) (ClusterVersion, error) {
+	var res ClusterVersion
+	kubeVersionBody, err := client.Core().RESTClient().Get().AbsPath("/version").Do().Raw()
+	if err != nil {
+		return res, err
+	}
+	var kubeServerInfo version.Info
+	err = json.Unmarshal(kubeVersionBody, &kubeServerInfo)
+	if err != nil {
+		return res, err
+	}
+	res.K8sVersion = &kubeServerInfo.GitVersion
+
+	ocVersionBody, err := client.Discovery().RESTClient().Get().AbsPath("/version/openshift").Do().Raw()
+	if errors.IsNotFound(err) {
+		return res, nil
+	}
+
+	if err != nil {
+		return res, err
+	}
+
+	var ocServerInfo version.Info
+	err = json.Unmarshal(ocVersionBody, &ocServerInfo)
+	if err != nil {
+		return res, err
+	}
+	res.OsVersion = &ocServerInfo.GitVersion
+	return res, nil
 }
