@@ -79,6 +79,13 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		return nil, err
 	}
 
+	if clusterVer.K8sVersion != nil {
+		fmt.Printf("Found k8s ver %v", clusterVer.K8sVersion)
+	}
+	if clusterVer.OsVersion != nil {
+		fmt.Printf("Found os ver %v", clusterVer.OsVersion)
+	}
+
 	return &ReconcileSriovNetworkNodePolicy{client: mgr.GetClient(),
 		scheme:         mgr.GetScheme(),
 		clusterVersion: clusterVer}, nil
