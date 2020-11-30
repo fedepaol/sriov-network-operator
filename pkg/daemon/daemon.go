@@ -406,12 +406,8 @@ func (dn *Daemon) nodeStateSyncHandler(generation int64) error {
 	}
 	glog.V(0).Infof("nodeStateSyncHandler(): reqDrain %v, reqReboot %v", reqDrain, reqReboot)
 
-	if reqDrain {
-		glog.Info("nodeStateSyncHandler(): drain node")
-		if err := dn.drainNode(dn.name); err != nil {
-			return err
-		}
-	}
+	glog.Info("nodeStateSyncHandler(): skipping drain node")
+
 	for k, p := range dn.LoadedPlugins {
 		if k != GenericPlugin {
 			err := p.Apply()
